@@ -52,8 +52,13 @@ $CURL $URL --data "table_prefix=&admin_email=$EMAIL&admin_password=${ADMIN_PASS}
 
 rm -f /tmp/cookie
 
+# tweak configuration (compression, security)
 CONF=$WEBROOT/application/config/config.php
 sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
+sed -i "s|site_protocol'\].*|site_protocol'\] = 'https';|" $CONF
+
+CONF=$WEBROOT/application/config/cookie.php
+sed -i "s|secure'\].*|secure'\] = TRUE;|" $CONF
 
 # secure sensitive configuration files
 chmod 640 $WEBROOT/application/config/config.php
