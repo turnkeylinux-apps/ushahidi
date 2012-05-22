@@ -52,6 +52,11 @@ $CURL $URL --data "table_prefix=&admin_email=$EMAIL&admin_password=${ADMIN_PASS}
 
 rm -f /tmp/cookie
 
+# secure sensitive configuration files
+chmod 640 $WEBROOT/application/config/config.php
+chmod 640 $WEBROOT/application/config/encryption.php
+chmod 640 $WEBROOT/application/config/database.php
+
 # stop services
 /etc/init.d/mysql stop
 /etc/init.d/apache2 stop
