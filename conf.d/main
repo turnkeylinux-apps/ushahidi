@@ -1,0 +1,26 @@
+#!/bin/sh -ex
+
+DB_NAME=ushahidi
+DB_USER=ushahidi
+DB_PASS=$(mcookie)
+
+ADMIN_NAME=admin
+ADMIN_PASS=turnkey
+ADMIN_MAIL=admin@example.com
+
+SRC=/usr/local/src
+WEBROOT=/var/www/ushahidi
+
+# unpack and set permissions
+unzip $SRC/ushahidi-*.zip -d $SRC
+rm $SRC/ushahidi-*.zip
+mv $SRC/ushahidi-* $WEBROOT
+chown -R root:root $WEBROOT
+chown -R www-data:www-data $WEBROOT/application/logs
+chown -R www-data:www-data $WEBROOT/application/cache
+chown -R www-data:www-data $WEBROOT/media/uploads
+chown www-data:www-data $WEBROOT/application/config/config.php
+chown www-data:www-data $WEBROOT/application/config/encryption.php
+chown www-data:www-data $WEBROOT/application/config
+chown www-data:www-data $WEBROOT/.htaccess
+
