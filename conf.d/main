@@ -52,6 +52,9 @@ $CURL $URL --data "table_prefix=&admin_email=$EMAIL&admin_password=${ADMIN_PASS}
 
 rm -f /tmp/cookie
 
+# set password to our default (installation has min-length)
+/usr/lib/inithooks/bin/ushahidi.py --email=$ADMIN_MAIL --pass=$ADMIN_PASS
+
 # tweak configuration (compression, security)
 CONF=$WEBROOT/application/config/config.php
 sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
