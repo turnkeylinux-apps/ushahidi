@@ -24,3 +24,8 @@ chown www-data:www-data $WEBROOT/application/config/encryption.php
 chown www-data:www-data $WEBROOT/application/config
 chown www-data:www-data $WEBROOT/.htaccess
 
+# configure apache
+a2dissite default
+a2ensite ushahidi
+a2enmod rewrite
+
