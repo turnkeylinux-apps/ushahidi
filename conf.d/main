@@ -52,6 +52,9 @@ $CURL $URL --data "table_prefix=&admin_email=$EMAIL&admin_password=${ADMIN_PASS}
 
 rm -f /tmp/cookie
 
+CONF=$WEBROOT/application/config/config.php
+sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
+
 # secure sensitive configuration files
 chmod 640 $WEBROOT/application/config/config.php
 chmod 640 $WEBROOT/application/config/encryption.php
