@@ -55,13 +55,9 @@ rm -f /tmp/cookie
 # set password to our default (installation has min-length)
 /usr/lib/inithooks/bin/ushahidi.py --email=$ADMIN_MAIL --pass=$ADMIN_PASS
 
-# tweak configuration (compression, security)
+# tweak configuration (compression)
 CONF=$WEBROOT/application/config/config.php
 sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
-sed -i "s|site_protocol'\].*|site_protocol'\] = 'https';|" $CONF
-
-CONF=$WEBROOT/application/config/cookie.php
-sed -i "s|secure'\].*|secure'\] = TRUE;|" $CONF
 
 # secure sensitive configuration files
 chmod 640 $WEBROOT/application/config/config.php
