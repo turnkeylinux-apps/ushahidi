@@ -12,16 +12,14 @@ SRC=/usr/local/src
 WEBROOT=/var/www/ushahidi
 
 # unpack and set permissions
-unzip $SRC/ushahidi-*.zip -d $SRC
-rm $SRC/ushahidi-*.zip
-mv $SRC/ushahidi-* $WEBROOT
+unzip $SRC/Ushahidi_*.zip -d $SRC
+rm $SRC/Ushahidi_*.zip
+mv $SRC/Ushahidi_* $WEBROOT
 chown -R root:root $WEBROOT
-chown -R www-data:www-data $WEBROOT/application/logs
+chown -R www-data:www-data $WEBROOT/application/config
 chown -R www-data:www-data $WEBROOT/application/cache
+chown -R www-data:www-data $WEBROOT/application/logs
 chown -R www-data:www-data $WEBROOT/media/uploads
-chown www-data:www-data $WEBROOT/application/config/config.php
-chown www-data:www-data $WEBROOT/application/config/encryption.php
-chown www-data:www-data $WEBROOT/application/config
 chown www-data:www-data $WEBROOT/.htaccess
 
 # configure apache
@@ -41,19 +39,17 @@ $MYSQL_ADMIN create $DB_NAME
 $MYSQL_BATCH --execute "grant all privileges on $DB_NAME.* to $DB_USER@localhost identified by '$DB_PASS'; flush privileges;"
 
 # curl based install
-URL="http://127.0.0.1/installer/process.php"
+URL="http://127.0.0.1/installer/"
 CURL="curl -c /tmp/cookie -b /tmp/cookie"
 EMAIL=$(echo $ADMIN_MAIL | sed s/@/%40/)
 
-$CURL $URL --data "basic_perm_pre_check=Let%27s+get+started%21"
-$CURL $URL --data "base_path=&db_name=$DB_NAME&username=$DB_USER&password=$DB_PASS&host=localhost&table_prefix=&connection=&permission=&load_db_tpl=&load_htaccess_file=&config_perm=&htaccess_perm=&basic_db_info=Continue+%E2%86%92"
-$CURL $URL --data "table_prefix=&site_name=TurnKey+Ushahidi&site_tagline=Crowdsourcing+information&select_language=en_US&site_email=$EMAIL&enable_clean_url=1&basic_general_settings=Continue+%E2%86%92"
-$CURL $URL --data "table_prefix=&admin_email=$EMAIL&admin_password=${ADMIN_PASS}123&admin_password_again=${ADMIN_PASS}123&basic_admin_pass=Continue+%E2%86%92"
+$CURL $URL --data "install_mode_basic=1"
+$CURL $URL --data "continue=Let%27s+get+started%21"
+$CURL $URL --data "database=$DB_NAME&username=$DB_USER&password=$DB_PASS&host=localhost&table_prefix=&connection=&permission=&load_db_tpl=&load_htaccess_file=&config_perm=&htaccess_perm=&continue=Continue+%E2%86%92"
+$CURL $URL --data "site_name=TurnKey+Ushahidi&site_tagline=Crowdsourcing+information&site_language=en_US&site_email=$EMAIL&enable_clean_urls=1&continue=Continue+%E2%86%92"
+$CURL $URL --data "email=$EMAIL&password=$ADMIN_PASS&confirm_password=$ADMIN_PASS&continue=Continue+%E2%86%92"
 
 rm -f /tmp/cookie
-
-# set password to our default (installation has min-length)
-/usr/lib/inithooks/bin/ushahidi.py --email=$ADMIN_MAIL --pass=$ADMIN_PASS
 
 # tweak configuration (compression)
 CONF=$WEBROOT/application/config/config.php
@@ -63,6 +59,9 @@ sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
 chmod 640 $WEBROOT/application/config/config.php
 chmod 640 $WEBROOT/application/config/encryption.php
 chmod 640 $WEBROOT/application/config/database.php
+
+# delete installation
+rm -rf $WEBROOT/installer
 
 # stop services
 /etc/init.d/mysql stop
