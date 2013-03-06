@@ -67,7 +67,7 @@ def main():
     m = MySQL()
     m.execute('UPDATE ushahidi.users SET password=\"%s\" WHERE username=\"admin\";' % cryptpass)
     m.execute('UPDATE ushahidi.users SET email=\"%s\" WHERE username=\"admin\";' % email)
-    m.execute('UPDATE ushahidi.settings SET site_email=\"%s\" WHERE id=1;' % email)
+    m.execute('UPDATE ushahidi.settings SET value=\"%s\" WHERE settings.key=\"site_email\";' % email)
 
 if __name__ == "__main__":
     main()
