@@ -1,5 +1,7 @@
 <?php
 
+include_once('/var/www/ushahidi/application/config/auth.php');
+
 class Auth {
 	public function __construct($hash_method, $salt_pattern) {
         $config['hash_method'] = $hash_method;
@@ -33,11 +35,9 @@ class Auth {
 
 if(count($argv)!=2) die("usage: $argv[0] password\n");
 
-// must be insync with ushahidi/application/config/auth.php
-$salt_pattern = '3, 5, 6, 10, 24, 26, 35, 36, 37, 40';
 $password = $argv[1];
 
-$auth = new Auth('sha1', $salt_pattern);
+$auth = new Auth('sha1', $config['salt_pattern']);
 print $auth->hash_password($password);
 
 print "\n";
