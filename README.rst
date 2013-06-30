@@ -25,7 +25,7 @@ Credentials *(passwords set at first boot)*
 -------------------------------------------
 
 -  Webmin, SSH, MySQL, phpMyAdmin: username **root**
--  Ushahidi: username **admin@example.com**
+-  Ushahidi: username is email set on first boot
 
 
 .. _Ushahidi: http://ushahidi.com/
