@@ -6,7 +6,7 @@ dl() {
 }
 
 VERSION="2.7.4"
-URL="http://5e03d0a13114d9d5e47c-f9fe2e6be12470a7bff22b7693bc7329.r81.cf1.rackcdn.com/Ushahidi_Web-$VERSION.zip"
+URL="https://github.com/ushahidi/Ushahidi_Web/archive/$VERSION.zip"
 
 dl $URL /usr/local/src
 
