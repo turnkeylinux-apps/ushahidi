@@ -5,8 +5,8 @@ dl() {
     cd $2; curl -L -f -O $PROXY $1; cd -
 }
 
-VERSION="2.6.1"
-URL="http://cloud.github.com/downloads/ushahidi/Ushahidi_Web/Ushahidi_Web-$VERSION.zip"
+VERSION="2.7.4"
+URL="http://5e03d0a13114d9d5e47c-f9fe2e6be12470a7bff22b7693bc7329.r81.cf1.rackcdn.com/Ushahidi_Web-$VERSION.zip"
 
 dl $URL /usr/local/src
 
