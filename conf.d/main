@@ -23,7 +23,7 @@ chown -R www-data:www-data $WEBROOT/media/uploads
 chown www-data:www-data $WEBROOT/.htaccess
 
 # configure apache
-a2dissite default
+a2dissite 000-default
 a2ensite ushahidi
 a2enmod rewrite
 
