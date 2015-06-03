@@ -12,9 +12,9 @@ SRC=/usr/local/src
 WEBROOT=/var/www/ushahidi
 
 # unpack and set permissions
-unzip $SRC/Ushahidi_*.zip -d $SRC
-rm $SRC/Ushahidi_*.zip
-mv $SRC/Ushahidi_* $WEBROOT
+unzip $SRC/ushahidi.zip -d $SRC
+rm $SRC/ushahidi.zip
+mv $SRC/Ushahidi_Web* $WEBROOT
 chown -R root:root $WEBROOT
 chown -R www-data:www-data $WEBROOT/application/config
 chown -R www-data:www-data $WEBROOT/application/cache
