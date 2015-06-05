@@ -1,3 +1,23 @@
+turnkey-ushahidi-14.0 (1) turnkey; urgency=low
+
+  * Ushahidi:
+
+    - Upgraded to latest version Ushahidi.
+    - Downloaded from GitHub repositiory.
+
+  * Adminer:
+
+    - Replaces PHPMyAdmin.
+
+  * Upstream source component versions:
+
+    ushahidi        2.7.4 (+ bugfixes)
+
+  * Note: Please refer to turnkey-core's changelog for changes common to all
+    appliances. Here we only describe changes specific to this appliance.
+
+ -- Jeremy Davis <jeremy@turnkeylinux.org>  Thu, 04 Jun 2015 00:23:30 +1000
+
 turnkey-ushahidi-13.0 (1) turnkey; urgency=low
 
   * PHPMyAdmin:
