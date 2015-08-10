@@ -55,6 +55,9 @@ sed -i 's|error_reporting(E_ALL \& ~E_STRICT);|error_reporting(E_ALL \& ~E_STRIC
 CONF=$WEBROOT/application/config/config.php
 sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
 
+# tweak configuration (https)
+sed -i "s|site_protocol'\].*|site_protocol'\] = 'https';|" $CONF
+
 # secure sensitive configuration files
 chmod 640 $WEBROOT/application/config/config.php
 chmod 640 $WEBROOT/application/config/encryption.php
