@@ -10,6 +10,7 @@ Option:
 import re
 import sys
 import getopt
+import inithooks_cache
 import subprocess
 from subprocess import PIPE
 from os.path import *
@@ -55,6 +56,8 @@ def main():
             "Ushahidi Email",
             "Enter email address for the Ushahidi 'admin' account.",
             "admin@example.com")
+
+    inithooks_cache.write('APP_EMAIL', email)
 
     command = ["php", join(dirname(__file__), 'ushahidi_pass.php'), password]
     p = subprocess.Popen(command, stdin=PIPE, stdout=PIPE, shell=False)
