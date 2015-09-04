@@ -2,7 +2,6 @@
 
 [ "$FAB_HTTP_PROXY" ] &&  http_proxy="$FAB_HTTP_PROXY"
 
-#VERSION="2.7.4"
 REPO_URL=git://github.com/ushahidi
 WEBROOT=/var/www/ushahidi
 
