@@ -1,3 +1,5 @@
+PHP56 = y
+
 COMMON_CONF = apache-credit
 
 CREDIT_LOCATION = ~ "^/(?!(.*login|.*admin))"

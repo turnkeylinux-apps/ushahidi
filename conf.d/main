@@ -11,6 +11,8 @@ ADMIN_MAIL=admin@example.com
 SRC=/usr/local/src
 WEBROOT=/var/www/ushahidi
 
+sed -i "57s/'mysql'/\/\/mysql/" $WEBROOT/installer/wizard.php
+
 # set permissions
 chown -R root:root $WEBROOT
 chown -R www-data:www-data $WEBROOT/application/config
@@ -25,8 +27,8 @@ a2ensite ushahidi
 a2enmod rewrite
 
 # start services
-/etc/init.d/mysql start
-/etc/init.d/apache2 start
+service mysql start
+service apache2 start
 
 # setup the database
 MYSQL_BATCH="mysql --user=root --password=$MYSQL_PASS --batch"
@@ -67,6 +69,6 @@ chmod 640 $WEBROOT/application/config/database.php
 rm -rf $WEBROOT/installer
 
 # stop services
-/etc/init.d/mysql stop
-/etc/init.d/apache2 stop
+service mysql stop
+service apache2 stop
 
