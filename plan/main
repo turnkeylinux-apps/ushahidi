@@ -8,6 +8,7 @@ php-json
 php-mbstring
 php-imap
 php-xml
+php-redis
 
 unzip
 python3-bcrypt
