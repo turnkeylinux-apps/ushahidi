@@ -11,3 +11,4 @@ php-xml
 
 unzip
 python3-bcrypt
+redis-server
