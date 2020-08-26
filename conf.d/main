@@ -1,74 +1,66 @@
-#!/bin/sh -ex
+#!/bin/bash -ex
 
 DB_NAME=ushahidi
 DB_USER=ushahidi
 DB_PASS=$(mcookie)
 
-ADMIN_NAME=admin
 ADMIN_PASS=turnkey
 ADMIN_MAIL=admin@example.com
 
 SRC=/usr/local/src
 WEBROOT=/var/www/ushahidi
 
-sed -i "57s/'mysql'/\/\/mysql/" $WEBROOT/installer/wizard.php
+# unpack tarball & cleanup
+tar -xvf $SRC/ushahidi.tar.gz -C $SRC
+mkdir -p $(dirname $WEBROOT) # should exist; but just in case...
+mv $SRC/ushahidi-platform-release-*/html $WEBROOT
+rm -rf $SRC/ushahidi*
 
-# set permissions
-chown -R root:root $WEBROOT
-chown -R www-data:www-data $WEBROOT/application/config
-chown -R www-data:www-data $WEBROOT/application/cache
-chown -R www-data:www-data $WEBROOT/application/logs
-chown -R www-data:www-data $WEBROOT/media/uploads
-chown www-data:www-data $WEBROOT/.htaccess
+# create conf
+cat > $WEBROOT/platform/.env <<EOF
+APP_ENV=production
+APP_DEBUG=false
+APP_KEY=$(mcookie)
+# This is only relevant for debug level stuff like timestamps in log messages
+APP_TIMEZONE=UTC
+
+DB_HOST=localhost
+DB_DATABASE=ushahidi
+DB_USERNAME=ushahidi
+DB_PASSWORD=$DB_PASS
+DB_CONNECTION=mysql
+
+## Cache (you can use array if testing, and memcache or redis for production)
+CACHE_DRIVER=redis
+QUEUE_DRIVER=redis
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+
+# Enabling or disabling the maintenance mode page
+MAINTENANCE_MODE=0
+EOF
+
+# setup the database
+service mysql start
+mysqladmin create $DB_NAME
+mysql --batch --execute "grant all privileges on $DB_NAME.* to $DB_USER@localhost identified by '$DB_PASS'; flush privileges;"
+
+# finalise api setup
+cd $WEBROOT/platform
+php artisan migrate
+mkdir -p storage/{logs,app,framework,passport}
+chown -R www-data:www-data storage/{logs,app,framework}
+php artisan passport:keys
+
+# update admin user email & set site name
+/usr/lib/inithooks/bin/ushahidi.py --email="$ADMIN_MAIL" --pass="$ADMIN_PASS"
+mysql --batch --execute "INSERT INTO $DB_NAME.config (group_name, config_key, config_value) VALUES ('site', 'name', '\"TurnKey Ushahidi\"');"
+
+# stop db service
+service mysql stop
 
 # configure apache
 a2dissite 000-default
 a2ensite ushahidi
 a2enmod rewrite
-
-# start services
-service mysql start
-service apache2 start
-
-# setup the database
-MYSQL_BATCH="mysql --user=root --password=$MYSQL_PASS --batch"
-MYSQL_ADMIN="mysqladmin --user=root --password=$MYSQL_PASS"
-
-$MYSQL_ADMIN create $DB_NAME
-$MYSQL_BATCH --execute "grant all privileges on $DB_NAME.* to $DB_USER@localhost identified by '$DB_PASS'; flush privileges;"
-
-# curl based install
-URL="--insecure https://127.0.0.1/installer/"
-CURL="curl -c /tmp/cookie -b /tmp/cookie"
-EMAIL=$(echo $ADMIN_MAIL | sed s/@/%40/)
-
-$CURL $URL --data "install_mode_basic=1"
-$CURL $URL --data "continue=Let%27s+get+started%21"
-$CURL $URL --data "database=$DB_NAME&username=$DB_USER&password=$DB_PASS&host=localhost&table_prefix=&connection=&permission=&load_db_tpl=&load_htaccess_file=&config_perm=&htaccess_perm=&continue=Continue+%E2%86%92"
-$CURL $URL --data "site_name=TurnKey+Ushahidi&site_tagline=Crowdsourcing+information&site_language=en_US&site_email=$EMAIL&enable_clean_urls=1&continue=Continue+%E2%86%92"
-$CURL $URL --data "email=$EMAIL&password=$ADMIN_PASS&confirm_password=$ADMIN_PASS&continue=Continue+%E2%86%92"
-
-rm -f /tmp/cookie
-
-# work around issues when running under php5.4: "Non-static method xxxx::xxxx() should not be called statically"
-sed -i 's|error_reporting(E_ALL \& ~E_STRICT);|error_reporting(E_ALL \& ~E_STRICT \& ~E_DEPRECATD);|' /var/www/ushahidi/index.php
-
-# tweak configuration (compression)
-CONF=$WEBROOT/application/config/config.php
-sed -i "s|output_compression'\].*|output_compression'\] = FALSE;|" $CONF
-
-# tweak configuration (https)
-sed -i "s|site_protocol'\].*|site_protocol'\] = 'https';|" $CONF
-
-# secure sensitive configuration files
-chmod 640 $WEBROOT/application/config/config.php
-chmod 640 $WEBROOT/application/config/encryption.php
-chmod 640 $WEBROOT/application/config/database.php
-
-# delete installation
-rm -rf $WEBROOT/installer
-
-# stop services
-service mysql stop
-service apache2 stop
-
+a2enmod headers

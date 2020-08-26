@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 """Set Ushahidi admin password and email
 
 Option:
@@ -7,29 +7,28 @@ Option:
 
 """
 
-import re
 import sys
 import getopt
-import inithooks_cache
-import subprocess
-from subprocess import PIPE
-from os.path import *
-
-from dialog_wrapper import Dialog
+import bcrypt
 from mysqlconf import MySQL
+
+import inithooks_cache
+from dialog_wrapper import Dialog
+
 
 def usage(s=None):
     if s:
-        print >> sys.stderr, "Error:", s
-    print >> sys.stderr, "Syntax: %s [options]" % sys.argv[0]
-    print >> sys.stderr, __doc__
+        print("Error:", s, file=sys.stderr)
+    print("Syntax: %s [options]" % sys.argv[0], file=sys.stderr)
+    print(__doc__, file=sys.stderr)
     sys.exit(1)
+
 
 def main():
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], "h",
                                        ['help', 'pass=', 'email='])
-    except getopt.GetoptError, e:
+    except getopt.GetoptError as e:
         usage(e)
 
     password = ""
@@ -59,19 +58,13 @@ def main():
 
     inithooks_cache.write('APP_EMAIL', email)
 
-    command = ["php", join(dirname(__file__), 'ushahidi_pass.php'), password]
-    p = subprocess.Popen(command, stdin=PIPE, stdout=PIPE, shell=False)
-    stdout, stderr = p.communicate()
-    if stderr:
-        fatal(stderr)
-
-    cryptpass = stdout.strip()
+    salt = bcrypt.gensalt()
+    hashpass = bcrypt.hashpw(password.encode('utf8'), salt).decode('utf8')
 
     m = MySQL()
-    m.execute('UPDATE ushahidi.users SET password=\"%s\" WHERE username=\"admin\";' % cryptpass)
-    m.execute('UPDATE ushahidi.users SET email=\"%s\" WHERE username=\"admin\";' % email)
-    m.execute('UPDATE ushahidi.settings SET value=\"%s\" WHERE settings.key=\"site_email\";' % email)
+    m.execute('UPDATE ushahidi.users SET password=%s WHERE id=1;', (hashpass,))
+    m.execute('UPDATE ushahidi.users SET email=%s WHERE id=1;', (email,))
+
 
 if __name__ == "__main__":
     main()
-
