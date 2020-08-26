@@ -53,15 +53,10 @@ chown -R www-data:www-data storage/{logs,app,framework}
 php artisan passport:keys
 
 # update admin user email & set site name
-#mysql --batch --execute "UPDATE $DB_NAME.users SET email='$ADMIN_MAIL' WHERE id=1;"
-#created=$(mysql --batch --skip-column-names --execute "select created from $DB_NAME.users where id=1;")
-#updated=$((created + 360))
-#mysql --batch --execute "UPDATE $DB_NAME.users SET updated=$updated WHERE id=1;"
 /usr/lib/inithooks/bin/ushahidi.py --email="$ADMIN_MAIL" --pass="$ADMIN_PASS"
-mysql --batch --execute "UPDATE $DB_NAME.config SET config_value='\"TurnKey Ushahidi\"' WHERE group_name='site' and config_key='name';"
+mysql --batch --execute "INSERT INTO $DB_NAME.config (group_name, config_key, config_value) VALUES ('site', 'name', '\"TurnKey Ushahidi\"');"
 
-mysqldump ushahidi > /root/db_dump.sql
-
+# stop db service
 service mysql stop
 
 # configure apache
