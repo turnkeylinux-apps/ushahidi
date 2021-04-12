@@ -6,7 +6,7 @@ dl() {
 }
 
 SRC=/usr/local/src
-VERSION="v4.6.0"
+VERSION="v4.6.9"
 FILE="ushahidi-platform-release-$VERSION.tar.gz"
 URL="https://github.com/ushahidi/platform-release/releases/download/$VERSION/$FILE"
 
