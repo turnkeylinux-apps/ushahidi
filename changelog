@@ -1,3 +1,13 @@
+turnkey-ushahidi-16.1 (1) turnkey; urgency=low
+
+  * Upgraded to latest version of Ushahidi from "platform-release" git repo -
+    v4.6.9.
+
+  * Note: Please refer to turnkey-core's 16.1 changelog for changes common to
+    all appliances. Here we only describe changes specific to this appliance.
+
+ -- Jeremy Davis <jeremy@turnkeylinux.org>  Mon, 12 Apr 2021 16:02:48 +1000
+
 turnkey-ushahidi-16.0 (1) turnkey; urgency=low
 
   * Upgraded to latest version of Ushahidi from "platform-release" git repo -
