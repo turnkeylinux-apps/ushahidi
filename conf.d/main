@@ -45,12 +45,15 @@ service mysql start
 mysqladmin create $DB_NAME
 mysql --batch --execute "grant all privileges on $DB_NAME.* to $DB_USER@localhost identified by '$DB_PASS'; flush privileges;"
 
+# set up turnkey-artisan command
+sed -i "\|^export WEBROOT| s|=.*|=$WEBROOT/platform|" /usr/local/bin/turnkey-artisan
+
 # finalise api setup
-cd $WEBROOT/platform
-php artisan migrate
-mkdir -p storage/{logs,app,framework,passport}
-chown -R www-data:www-data storage/{logs,app,framework}
-php artisan passport:keys
+mkdir -p $WEBROOT/platform/storage/{logs,app,framework,passport}
+chown -R www-data:www-data $WEBROOT
+chmod +x $WEBROOT/platform/bin/phinx
+runuser -l www-data -s /bin/bash -c "cd $WEBROOT/platform && ./bin/phinx migrate -c phinx.php"
+turnkey-artisan passport:keys
 
 # update admin user email & set site name
 /usr/lib/inithooks/bin/ushahidi.py --email="$ADMIN_MAIL" --pass="$ADMIN_PASS"
