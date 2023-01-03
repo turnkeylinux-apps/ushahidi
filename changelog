@@ -1,3 +1,22 @@
+turnkey-ushahidi-17.0 (1) turnkey; urgency=low
+
+  * Upgraded to latest version of Ushahidi (ushahidi/platform-release): v5.3.1
+
+  * Updated all relevant Debian packages to Bullseye/11 versions.
+
+  * Includes PHP7.3 (from deb.sury.org) - the most recent version of PHP that
+    Ushahidi supports.
+
+  * Include 'turnkey-composer' and 'turnkey-artisan' wrapper scripts for
+    easier maintence.
+
+  * Update Ushahidid inithooks so compatible with libinithooks refactoring.
+
+  * Note: Please refer to turnkey-core's 17.0 changelog for changes common to all
+    appliances. Here we only describe changes specific to this appliance.
+
+ -- Jeremy Davis <jeremy@turnkeylinux.org>  Mon, 12 Dec 2022 03:16:31 +0000
+
 turnkey-ushahidi-16.1 (1) turnkey; urgency=low
 
   * Upgraded to latest version of Ushahidi from "platform-release" git repo -

@@ -1,14 +1,14 @@
 #include <turnkey/base>
-#include <turnkey/lamp>
+#include <turnkey/lamp73>
 
-php-gd
-php-cli
-php-curl
-php-json
-php-mbstring
-php-imap
-php-xml
-php-redis
+php7.3-gd
+php7.3-cli
+php7.3-curl
+php7.3-json
+php7.3-mbstring
+php7.3-imap
+php7.3-xml
+php7.3-redis
 
 unzip
 python3-bcrypt
