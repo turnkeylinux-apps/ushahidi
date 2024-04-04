@@ -52,7 +52,8 @@ sed -i "\|^export WEBROOT| s|=.*|=$WEBROOT/platform|" /usr/local/bin/turnkey-art
 mkdir -p $WEBROOT/platform/storage/{logs,app,framework,passport}
 chown -R www-data:www-data $WEBROOT
 chmod +x $WEBROOT/platform/bin/phinx
-runuser -l www-data -s /bin/bash -c "cd $WEBROOT/platform && ./bin/phinx migrate -c phinx.php"
+
+turnkey-artisan phinx:migrate
 turnkey-artisan passport:keys
 
 # update admin user email & set site name

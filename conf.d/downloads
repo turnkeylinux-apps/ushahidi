@@ -6,9 +6,10 @@ dl() {
 }
 
 SRC=/usr/local/src
-VERSION="v5.3.1"
+REPO="ushahidi/platform-release"
+VERSION=$(gh_releases "$REPO" | sort -V | grep -v 'rc' | tail -1)
 FILE="ushahidi-platform-release-$VERSION.tar.gz"
-URL="https://github.com/ushahidi/platform-release/releases/download/$VERSION/$FILE"
+URL="https://github.com/$REPO/releases/download/$VERSION/$FILE"
 
 dl $URL $SRC
 mv $SRC/$FILE $SRC/ushahidi.tar.gz
