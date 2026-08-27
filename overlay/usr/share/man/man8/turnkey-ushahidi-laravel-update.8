@@ -1,0 +1,63 @@
+.TH TURNKEY-USHAHIDI-LARAVEL-UPDATE 8 "August 2026" "TurnKey Linux" "System Administration"
+.SH NAME
+turnkey-ushahidi-laravel-update \- verify, update, or roll back Ushahidi's Laravel 8 runtime
+.SH SYNOPSIS
+.B turnkey-ushahidi-laravel-update --check
+.br
+.B turnkey-ushahidi-laravel-update --apply --dry-run
+.br
+.B turnkey-ushahidi-laravel-update --apply
+.br
+.B turnkey-ushahidi-laravel-update --rollback
+.SH DESCRIPTION
+The command maintains the Laravel framework embedded in the Ushahidi appliance.
+It fetches only the official 8.x branch and v8.* tags from
+https://github.com/laravel/framework.git. Only stable, non-prerelease tags are
+eligible.
+.PP
+A candidate must descend from the installed commit and the CVE-2024-52301
+baseline commit, be an ancestor of the official 8.x branch, declare the
+laravel/framework package, match its tag version, and retain the installed
+dependency and autoload contract. A downgrade, changed tag, unrelated history,
+prerelease, other major version, or package-contract change fails closed.
+.PP
+The complete Git repository is stored at
+/usr/local/share/turnkey-ushahidi/laravel-framework.git. Runtime generations
+and their integrity records are stored under
+/var/lib/turnkey-ushahidi/laravel. The framework and its Composer lock and
+installed metadata all resolve through one current-generation link. Apply
+stages and verifies an immutable Git checkout before replacing that link.
+.SH OPTIONS
+.TP
+.B --check
+Fetch and verify the official channel, validate the installed generation, and
+report the newest acceptable stable tag without changing the runtime.
+.TP
+.B --apply --dry-run
+Perform the same verification and report the proposed action without staging
+or activating a generation.
+.TP
+.B --apply
+Stage the candidate and its coherent Composer metadata, lint focused changed
+PHP files, activate it, and run the Ushahidi Laravel health check. A failed
+post-activation check automatically restores the prior generation.
+.TP
+.B --rollback
+Exchange the current and previous verified generations and run the health
+check. If rollback health validation fails, the original generation is
+restored. Root privileges are required for apply and rollback.
+.SH RECOVERY
+Run --check after any interrupted operation. If a successful update later
+shows an application regression, run --rollback. Do not git pull into
+/var/www/ushahidi or edit the managed links. Preserve the Git repository,
+/var/lib/turnkey-ushahidi/laravel, and the Ushahidi database/storage in normal
+backups. If neither verified generation is healthy, leave the failing update
+unapplied and obtain a reviewed TurnKey package update.
+.SH SECURITY MODEL
+Laravel 8 is beyond its formal guaranteed-support window. The official 8.x Git
+repository is used as a best-effort source because upstream has published
+post-EOL security fixes. There is no SLA or guarantee that all vulnerabilities
+will be fixed. If acceptable stable tags stop, the updater intentionally stops;
+it never substitutes branch HEAD, a prerelease, or an unverified fork.
+.SH SEE ALSO
+turnkey-ushahidi-update(8), git(1)

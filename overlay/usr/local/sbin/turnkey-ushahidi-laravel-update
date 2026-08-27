@@ -1,0 +1,595 @@
+#!/usr/bin/python3
+"""Safely update Ushahidi's Laravel 8 framework from the official Git repo."""
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Dict, Iterable, List, Optional, Tuple
+
+
+OFFICIAL_REMOTE = "https://github.com/laravel/framework.git"
+SECURITY_BASELINE = "eded6bdfc05af9b5437d107b4d092558fe46292c"
+MINIMUM_TAG = "v8.83.28"
+SHIPPED_TAG = "v8.83.29"
+SHIPPED_COMMIT = "d841a226a50c715431952a10260ba4fac9e91cc4"
+STABLE_TAG = re.compile(r"^v8\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+HEX_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+class UpdateError(RuntimeError):
+    pass
+
+
+def run(args: List[str], *, capture: bool = False, check: bool = True,
+        env: Optional[Dict[str, str]] = None) -> str:
+    result = subprocess.run(
+        args,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        env=env,
+    )
+    if check and result.returncode:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise UpdateError(f"command failed ({result.returncode}): {' '.join(args)}"
+                          + (f": {detail}" if detail else ""))
+    return (result.stdout or "").strip()
+
+
+def git(repo: Path, *args: str, capture: bool = True, check: bool = True) -> str:
+    return run(["git", f"--git-dir={repo}", *args], capture=capture, check=check)
+
+
+def parse_record(path: Path) -> Dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise UpdateError(f"cannot read runtime record {path}: {exc}") from exc
+    record: Dict[str, str] = {}
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise UpdateError(f"malformed runtime record line: {line}")
+        key, value = line.split("=", 1)
+        if not key or key in record:
+            raise UpdateError(f"invalid or duplicate runtime record key: {key}")
+        record[key] = value
+    return record
+
+
+def write_record(path: Path, values: Dict[str, str]) -> None:
+    ordered = [
+        "version", "tag", "commit", "tree", "remote", "repo_path",
+        "security_baseline", "security_model", "framework_manifest_sha256",
+        "composer_lock_sha256", "installed_json_sha256", "installed_php_sha256",
+    ]
+    path.write_text("".join(f"{key}={values[key]}\n" for key in ordered),
+                    encoding="utf-8")
+    path.chmod(0o644)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def framework_manifest(root: Path) -> str:
+    digest = hashlib.sha256()
+    entries: List[Path] = []
+    for path in root.rglob("*"):
+        if path.is_file() or path.is_symlink():
+            entries.append(path)
+        elif not path.is_dir():
+            raise UpdateError(f"unsupported framework entry: {path}")
+    for path in sorted(entries, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode()
+        digest.update(relative + b"\0")
+        if path.is_symlink():
+            digest.update(b"link\0" + os.readlink(path).encode() + b"\0")
+        else:
+            digest.update(f"{path.stat().st_mode & 0o777:o}".encode() + b"\0")
+            digest.update(bytes.fromhex(sha256(path)))
+    return digest.hexdigest()
+
+
+def semver(tag: str) -> Tuple[int, int, int]:
+    match = STABLE_TAG.fullmatch(tag)
+    if not match:
+        raise UpdateError(f"not a stable Laravel 8 tag: {tag}")
+    return (8, int(match.group(1)), int(match.group(2)))
+
+
+def json_read(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UpdateError(f"invalid JSON file {path}: {exc}") from exc
+
+
+def json_write(path: Path, value) -> None:
+    path.write_text(json.dumps(value, indent=4, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    path.chmod(0o644)
+
+
+def package_entry(document, name: str):
+    packages = document.get("packages") if isinstance(document, dict) else None
+    if not isinstance(packages, list):
+        raise UpdateError("Composer document has no packages list")
+    matches = [item for item in packages
+               if isinstance(item, dict) and item.get("name") == name]
+    if len(matches) != 1:
+        raise UpdateError(f"expected exactly one {name} package entry")
+    return matches[0]
+
+
+def verify_package_metadata(installed_entry: Dict, candidate: Dict) -> None:
+    # A future tag which changes dependencies or autoloading needs a reviewed
+    # TurnKey updater revision; silently rewriting those contracts is unsafe.
+    candidate = dict(candidate)
+    candidate.setdefault("type", "library")
+    if isinstance(candidate.get("license"), str):
+        candidate["license"] = [candidate["license"]]
+    for key in ("name", "type", "require", "replace", "autoload", "extra", "license"):
+        if installed_entry.get(key) != candidate.get(key):
+            raise UpdateError(f"candidate Laravel package metadata changed: {key}")
+
+
+def patch_composer_metadata(platform: Path, framework: Path, tag: str,
+                            commit: str, commit_time: str, output: Path) -> None:
+    candidate = json_read(framework / "composer.json")
+    if candidate.get("name") != "laravel/framework":
+        raise UpdateError("candidate package is not laravel/framework")
+
+    lock = json_read(platform / "composer.lock")
+    installed_json = json_read(platform / "vendor/composer/installed.json")
+    lock_entry = package_entry(lock, "laravel/framework")
+    installed_entry = package_entry(installed_json, "laravel/framework")
+    verify_package_metadata(lock_entry, candidate)
+    verify_package_metadata(installed_entry, candidate)
+
+    old_tag = lock_entry.get("version")
+    old_commit = (lock_entry.get("source") or {}).get("reference")
+    if not isinstance(old_tag, str) or not STABLE_TAG.fullmatch(old_tag):
+        raise UpdateError(f"installed Laravel version is not a stable v8 tag: {old_tag}")
+    if not isinstance(old_commit, str) or not HEX_COMMIT.fullmatch(old_commit):
+        raise UpdateError("installed Laravel source reference is invalid")
+    if installed_entry.get("version") != old_tag:
+        raise UpdateError("Composer lock and installed.json Laravel versions differ")
+    if (installed_entry.get("source") or {}).get("reference") != old_commit:
+        raise UpdateError("Composer lock and installed.json Laravel commits differ")
+
+    normalized = f"8.{semver(tag)[1]}.{semver(tag)[2]}.0"
+    dist_url = f"https://api.github.com/repos/laravel/framework/zipball/{commit}"
+    for entry in (lock_entry, installed_entry):
+        entry["version"] = tag
+        if "version_normalized" in entry:
+            entry["version_normalized"] = normalized
+        entry["source"] = {"type": "git", "url": OFFICIAL_REMOTE,
+                           "reference": commit}
+        entry["dist"] = {"type": "zip", "url": dist_url,
+                         "reference": commit, "shasum": ""}
+        entry["time"] = commit_time
+
+    installed_php_path = platform / "vendor/composer/installed.php"
+    installed_php = installed_php_path.read_text(encoding="utf-8")
+    replacements = {
+        old_tag: tag,
+        old_tag.removeprefix("v") + ".0": normalized,
+        old_commit: commit,
+    }
+    for old, new in replacements.items():
+        if old == new:
+            continue
+        if old not in installed_php:
+            raise UpdateError(f"Composer installed.php is missing expected value: {old}")
+        installed_php = installed_php.replace(old, new)
+        if old in installed_php:
+            raise UpdateError(f"Composer installed.php retained old value: {old}")
+
+    json_write(output / "composer.lock", lock)
+    json_write(output / "installed.json", installed_json)
+    (output / "installed.php").write_text(installed_php, encoding="utf-8")
+    (output / "installed.php").chmod(0o644)
+
+
+class LaravelUpdater:
+    def __init__(self) -> None:
+        testing = os.environ.get("TURNKEY_LARAVEL_TEST_MODE") == "1"
+        if any(key.startswith("TURNKEY_LARAVEL_") and key != "TURNKEY_LARAVEL_TEST_MODE"
+               for key in os.environ) and not testing:
+            raise UpdateError("path/health overrides require TURNKEY_LARAVEL_TEST_MODE=1")
+        self.platform = Path(os.environ.get(
+            "TURNKEY_LARAVEL_PLATFORM", "/var/www/ushahidi/platform"))
+        self.repo = Path(os.environ.get(
+            "TURNKEY_LARAVEL_REPO",
+            "/usr/local/share/turnkey-ushahidi/laravel-framework.git"))
+        self.state = Path(os.environ.get(
+            "TURNKEY_LARAVEL_STATE", "/var/lib/turnkey-ushahidi/laravel"))
+        self.record_link = Path(os.environ.get(
+            "TURNKEY_LARAVEL_RECORD",
+            "/usr/local/share/turnkey-ushahidi/laravel-runtime"))
+        self.healthcheck = os.environ.get("TURNKEY_LARAVEL_HEALTHCHECK") if testing else None
+        self.php = os.environ.get("TURNKEY_LARAVEL_PHP", "/usr/bin/php") if testing else "/usr/bin/php"
+
+    def validate_repo(self) -> None:
+        if not self.repo.is_dir():
+            raise UpdateError(f"missing packaged Laravel Git repository: {self.repo}")
+        if run(["git", f"--git-dir={self.repo}", "rev-parse", "--is-bare-repository"],
+               capture=True) != "true":
+            raise UpdateError("packaged Laravel repository is not bare")
+        remote = git(self.repo, "config", "--get", "remote.origin.url")
+        if remote != OFFICIAL_REMOTE:
+            raise UpdateError(f"unexpected Laravel origin: {remote}")
+        git(self.repo, "fsck", "--connectivity-only", "--no-dangling", capture=False)
+
+    def fetch(self) -> None:
+        # Existing tags are deliberately not force-updated: a rewritten stable
+        # tag fails closed instead of silently changing an authenticated ref.
+        git(self.repo, "fetch", "--quiet", "--atomic", "--prune", "--no-tags",
+            "--no-recurse-submodules",
+            "origin", "+refs/heads/8.x:refs/heads/8.x",
+            "refs/tags/v8.*:refs/tags/v8.*", capture=False)
+
+    def tags(self) -> List[str]:
+        refs = git(self.repo, "for-each-ref", "--format=%(refname:strip=2)",
+                   "refs/tags/v8.*").splitlines()
+        return sorted((tag for tag in refs if STABLE_TAG.fullmatch(tag)), key=semver)
+
+    def validate_candidate(self, tag: str, installed: Optional[Dict[str, str]]) -> Dict[str, str]:
+        semver(tag)
+        if semver(tag) < semver(MINIMUM_TAG):
+            raise UpdateError(f"candidate predates the security baseline: {tag}")
+        commit = git(self.repo, "rev-parse", f"refs/tags/{tag}^{{commit}}")
+        tree = git(self.repo, "rev-parse", f"{commit}^{{tree}}")
+        if not HEX_COMMIT.fullmatch(commit) or not HEX_COMMIT.fullmatch(tree):
+            raise UpdateError("candidate Git identity is invalid")
+        for ancestor, descendant, label in (
+            (SECURITY_BASELINE, commit, "CVE-2024-52301 baseline"),
+            (commit, "refs/heads/8.x", "official 8.x branch"),
+        ):
+            result = subprocess.run(
+                ["git", f"--git-dir={self.repo}", "merge-base", "--is-ancestor",
+                 ancestor, descendant], check=False)
+            if result.returncode != 0:
+                raise UpdateError(f"candidate is not bound to {label}")
+        candidate_package = json.loads(git(self.repo, "show", f"{commit}:composer.json"))
+        if candidate_package.get("name") != "laravel/framework":
+            raise UpdateError("candidate Git tag is not the Laravel framework package")
+        lock_entry = package_entry(json_read(self.platform / "composer.lock"),
+                                   "laravel/framework")
+        verify_package_metadata(lock_entry, candidate_package)
+        application_source = git(
+            self.repo, "show", f"{commit}:src/Illuminate/Foundation/Application.php")
+        if f"const VERSION = '{tag.removeprefix('v')}';" not in application_source:
+            raise UpdateError("candidate tag and Laravel runtime version constant differ")
+        if "$this->runningInConsole() && $_SERVER['argv']" not in application_source:
+            raise UpdateError("candidate lacks the CVE-2024-52301 regression guard")
+        if installed:
+            installed_tag = installed.get("tag", "")
+            installed_commit = installed.get("commit", "")
+            if semver(tag) < semver(installed_tag):
+                raise UpdateError(f"refusing Laravel downgrade {installed_tag} -> {tag}")
+            result = subprocess.run(
+                ["git", f"--git-dir={self.repo}", "merge-base", "--is-ancestor",
+                 installed_commit, commit], check=False)
+            if result.returncode != 0:
+                raise UpdateError("candidate is unrelated to the installed Laravel history")
+        return {"tag": tag, "version": tag.removeprefix("v"), "commit": commit,
+                "tree": tree}
+
+    def current_record(self) -> Optional[Dict[str, str]]:
+        if not self.record_link.exists():
+            return None
+        record = parse_record(self.record_link)
+        required = {
+            "version", "tag", "commit", "tree", "remote", "repo_path",
+            "security_baseline", "framework_manifest_sha256",
+            "composer_lock_sha256", "installed_json_sha256", "installed_php_sha256",
+        }
+        missing = sorted(required.difference(record))
+        if missing:
+            raise UpdateError("runtime record is missing: " + ", ".join(missing))
+        if record["remote"] != OFFICIAL_REMOTE or record["repo_path"] != str(self.repo):
+            raise UpdateError("runtime record has unexpected repository identity")
+        if record["security_baseline"] != SECURITY_BASELINE:
+            raise UpdateError("runtime record has unexpected security baseline")
+        return record
+
+    def validate_live(self, record: Dict[str, str]) -> None:
+        expected_links = {
+            self.platform / "vendor/laravel/framework": self.state / "current/framework",
+            self.platform / "composer.lock": self.state / "current/composer.lock",
+            self.platform / "vendor/composer/installed.json": self.state / "current/installed.json",
+            self.platform / "vendor/composer/installed.php": self.state / "current/installed.php",
+            self.record_link: self.state / "current/record",
+        }
+        for path, target in expected_links.items():
+            if not path.is_symlink() or Path(os.readlink(path)) != target:
+                raise UpdateError(f"managed runtime link is missing or changed: {path}")
+        files = {
+            "composer_lock_sha256": self.platform / "composer.lock",
+            "installed_json_sha256": self.platform / "vendor/composer/installed.json",
+            "installed_php_sha256": self.platform / "vendor/composer/installed.php",
+        }
+        for key, path in files.items():
+            if sha256(path) != record[key]:
+                raise UpdateError(f"managed runtime file failed integrity check: {path}")
+        framework = self.platform / "vendor/laravel/framework"
+        if framework_manifest(framework) != record["framework_manifest_sha256"]:
+            raise UpdateError("installed Laravel framework tree failed integrity check")
+        lock_entry = package_entry(json_read(self.platform / "composer.lock"),
+                                   "laravel/framework")
+        installed_entry = package_entry(
+            json_read(self.platform / "vendor/composer/installed.json"),
+            "laravel/framework")
+        expected_tag, expected_commit = record["tag"], record["commit"]
+        for entry in (lock_entry, installed_entry):
+            if entry.get("version") != expected_tag:
+                raise UpdateError("Composer metadata version differs from runtime record")
+            if (entry.get("source") or {}).get("reference") != expected_commit:
+                raise UpdateError("Composer metadata commit differs from runtime record")
+        application = framework / "src/Illuminate/Foundation/Application.php"
+        source = application.read_text(encoding="utf-8")
+        if f"const VERSION = '{record['version']}';" not in source:
+            raise UpdateError("Laravel runtime version constant differs from record")
+        if "$this->runningInConsole() && $_SERVER['argv']" not in source:
+            raise UpdateError("CVE-2024-52301 regression guard is absent")
+
+    def create_generation(self, candidate: Dict[str, str]) -> Path:
+        releases = self.state / "releases"
+        releases.mkdir(parents=True, exist_ok=True, mode=0o755)
+        stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=releases))
+        stage.chmod(0o755)
+        framework = stage / "framework"
+        framework.mkdir(mode=0o755)
+        archive = subprocess.Popen(
+            ["git", f"--git-dir={self.repo}", "archive", "--format=tar",
+             candidate["commit"]], stdout=subprocess.PIPE)
+        assert archive.stdout is not None
+        extract = subprocess.run(["tar", "-xf", "-", "-C", str(framework)],
+                                 stdin=archive.stdout, check=False)
+        archive.stdout.close()
+        archive_status = archive.wait()
+        if archive_status or extract.returncode:
+            raise UpdateError("failed to stage immutable Laravel checkout")
+        commit_time = git(self.repo, "show", "-s", "--format=%cI", candidate["commit"])
+        current_lock_entry = package_entry(json_read(self.platform / "composer.lock"),
+                                           "laravel/framework")
+        old_commit = (current_lock_entry.get("source") or {}).get("reference")
+        patch_composer_metadata(self.platform, framework, candidate["tag"],
+                                candidate["commit"], commit_time, stage)
+        changed_php: Iterable[str]
+        if isinstance(old_commit, str) and HEX_COMMIT.fullmatch(old_commit) and \
+                subprocess.run(["git", f"--git-dir={self.repo}", "cat-file", "-e",
+                                f"{old_commit}^{{commit}}"], check=False).returncode == 0:
+            changed_php = (
+                path for path in git(self.repo, "diff", "--name-only", old_commit,
+                                     candidate["commit"], "--", "*.php").splitlines()
+                if path.startswith("src/")
+            )
+        else:
+            changed_php = ("src/Illuminate/Foundation/Application.php",)
+        lint_targets = sorted(set(changed_php) | {
+            "src/Illuminate/Foundation/Application.php",
+            "src/Illuminate/Http/Middleware/TrustProxies.php",
+        })
+        for relative in lint_targets:
+            target = framework / relative
+            if target.is_file():
+                run([self.php, "-l", str(target)], capture=True)
+        manifest = framework_manifest(framework)
+        record = {
+            **candidate,
+            "remote": OFFICIAL_REMOTE,
+            "repo_path": str(self.repo),
+            "security_baseline": SECURITY_BASELINE,
+            "security_model": "official Laravel 8.x stable tags, best-effort without guaranteed coverage",
+            "framework_manifest_sha256": manifest,
+            "composer_lock_sha256": sha256(stage / "composer.lock"),
+            "installed_json_sha256": sha256(stage / "installed.json"),
+            "installed_php_sha256": sha256(stage / "installed.php"),
+        }
+        write_record(stage / "record", record)
+        self.validate_generation(stage)
+        final = releases / f"{candidate['tag']}-{candidate['commit'][:12]}"
+        if final.exists():
+            existing = parse_record(final / "record")
+            if existing != record:
+                raise UpdateError(f"existing generation differs: {final}")
+            shutil.rmtree(stage)
+            return final
+        os.rename(stage, final)
+        return final
+
+    def validate_generation(self, generation: Path) -> None:
+        record = parse_record(generation / "record")
+        if framework_manifest(generation / "framework") != record["framework_manifest_sha256"]:
+            raise UpdateError("staged framework manifest mismatch")
+        for key, name in (("composer_lock_sha256", "composer.lock"),
+                          ("installed_json_sha256", "installed.json"),
+                          ("installed_php_sha256", "installed.php")):
+            if sha256(generation / name) != record[key]:
+                raise UpdateError(f"staged metadata digest mismatch: {name}")
+        package = json_read(generation / "framework/composer.json")
+        if package.get("name") != "laravel/framework":
+            raise UpdateError("staged package identity mismatch")
+
+    @staticmethod
+    def atomic_symlink(path: Path, target: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + f".new-{os.getpid()}")
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(target)
+        os.replace(temporary, path)
+
+    def install_managed_links(self) -> None:
+        links = {
+            self.platform / "vendor/laravel/framework": self.state / "current/framework",
+            self.platform / "composer.lock": self.state / "current/composer.lock",
+            self.platform / "vendor/composer/installed.json": self.state / "current/installed.json",
+            self.platform / "vendor/composer/installed.php": self.state / "current/installed.php",
+            self.record_link: self.state / "current/record",
+        }
+        for path, target in links.items():
+            if path.exists() and not path.is_symlink():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            self.atomic_symlink(path, target)
+
+    def health(self) -> None:
+        if self.healthcheck:
+            run([self.healthcheck], capture=True)
+            return
+        output = run([self.php, str(self.platform / "artisan"), "--version"], capture=True)
+        record = self.current_record()
+        if not record or output != f"Laravel Framework {record['version']}":
+            raise UpdateError(f"Laravel health check returned: {output}")
+
+    def activate(self, generation: Path, *, bootstrap: bool = False) -> None:
+        old_target: Optional[Path] = None
+        current = self.state / "current"
+        if current.is_symlink():
+            old_target = Path(os.readlink(current))
+        if old_target:
+            self.atomic_symlink(self.state / "previous", old_target)
+        self.atomic_symlink(current, generation)
+        if bootstrap:
+            self.install_managed_links()
+        try:
+            self.validate_live(parse_record(generation / "record"))
+            self.health()
+        except Exception:
+            if old_target:
+                self.atomic_symlink(current, old_target)
+                try:
+                    self.health()
+                except Exception as rollback_exc:
+                    raise UpdateError(f"activation and rollback health checks failed: {rollback_exc}")
+            raise
+
+    def bootstrap(self, tag: str) -> None:
+        if self.current_record() is not None:
+            raise UpdateError("Laravel runtime is already managed")
+        candidate = self.validate_candidate(tag, None)
+        if tag == SHIPPED_TAG and candidate["commit"] != SHIPPED_COMMIT:
+            raise UpdateError("shipped Laravel tag commit changed")
+        generation = self.create_generation(candidate)
+        self.activate(generation, bootstrap=True)
+
+    def check(self, *, fetch: bool) -> Tuple[Dict[str, str], Dict[str, str], str]:
+        installed = self.current_record()
+        if not installed:
+            raise UpdateError("Laravel runtime has not been bootstrapped")
+        self.validate_live(installed)
+        if fetch:
+            self.fetch()
+        tags = self.tags()
+        if not tags:
+            raise UpdateError("official repository has no stable Laravel 8 tags")
+        candidate = self.validate_candidate(tags[-1], installed)
+        status = "up-to-date" if semver(candidate["tag"]) == semver(installed["tag"]) else "update-available"
+        return installed, candidate, status
+
+    def rollback(self) -> None:
+        current = self.state / "current"
+        previous = self.state / "previous"
+        if not current.is_symlink() or not previous.is_symlink():
+            raise UpdateError("no previous Laravel generation is available")
+        current_target = Path(os.readlink(current))
+        previous_target = Path(os.readlink(previous))
+        self.validate_generation(previous_target)
+        self.atomic_symlink(current, previous_target)
+        self.atomic_symlink(previous, current_target)
+        try:
+            record = self.current_record()
+            if not record:
+                raise UpdateError("rolled-back runtime record is missing")
+            self.validate_live(record)
+            self.health()
+        except Exception:
+            self.atomic_symlink(current, current_target)
+            self.atomic_symlink(previous, previous_target)
+            raise
+
+
+def output_status(installed: Dict[str, str], candidate: Dict[str, str], status: str) -> None:
+    print(f"installed={installed['tag']}")
+    print(f"installed_commit={installed['commit']}")
+    print(f"candidate={candidate['tag']}")
+    print(f"candidate_commit={candidate['commit']}")
+    print(f"repository={OFFICIAL_REMOTE}")
+    print(f"security_baseline={SECURITY_BASELINE}")
+    print("channel=official Laravel 8.x stable tags; best-effort, no guaranteed coverage")
+    print(f"status={status}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Safely update Ushahidi's Laravel 8 runtime")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--rollback", action="store_true")
+    action.add_argument("--bootstrap", metavar="TAG", help=argparse.SUPPRESS)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--offline", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.dry_run and not args.apply:
+        parser.error("--dry-run requires --apply")
+    if args.offline and not args.bootstrap:
+        parser.error("--offline is only valid during appliance bootstrap")
+    testing = os.environ.get("TURNKEY_LARAVEL_TEST_MODE") == "1"
+    if (args.apply or args.rollback or args.bootstrap) and os.geteuid() != 0 and not testing:
+        raise UpdateError("apply and rollback operations require root")
+
+    updater = LaravelUpdater()
+    updater.validate_repo()
+    updater.state.mkdir(parents=True, exist_ok=True, mode=0o755)
+    lock_path = updater.state / "update.lock"
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.bootstrap:
+            updater.bootstrap(args.bootstrap)
+            print(f"bootstrap={args.bootstrap}")
+            return 0
+        if args.rollback:
+            updater.rollback()
+            record = updater.current_record()
+            print(f"rollback=complete")
+            print(f"installed={record['tag'] if record else 'unknown'}")
+            return 0
+        installed, candidate, status = updater.check(fetch=True)
+        output_status(installed, candidate, status)
+        if args.apply and args.dry_run:
+            print("apply=dry-run verified stable candidate")
+        elif args.apply and status == "up-to-date":
+            print("apply=no-op")
+        elif args.apply:
+            generation = updater.create_generation(candidate)
+            updater.activate(generation)
+            print("apply=complete")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except UpdateError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
