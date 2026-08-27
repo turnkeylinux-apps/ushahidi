@@ -1,32 +1,75 @@
-#!/bin/bash -ex
+#!/bin/bash -e
+
+set -x
 
 DB_NAME=ushahidi
 DB_USER=ushahidi
-DB_PASS=$(mcookie)
 
 ADMIN_PASS=turnkey
 ADMIN_MAIL=admin@example.com
 
 SRC=/usr/local/src
 WEBROOT=/var/www/ushahidi
+VERSION=v6.0.17
+TAG_COMMIT=8b50289a360cd6a17d64f663dd7ec68369863f2f
+ARCHIVE_SHA256=9dd9fdfdb563400d0bdc2ba991a2552661541c304c4cadfd79c29539315a8e4e
+UPSTREAM_COMPOSER_LOCK_SHA256=cf38243e034da38b939ef548d8acd0531f26a8b5676d747b29d028000992440c
+LARAVEL_TAG=v8.83.29
+LARAVEL_COMMIT=d841a226a50c715431952a10260ba4fac9e91cc4
 
 # unpack tarball & cleanup
-tar -xvf $SRC/ushahidi.tar.gz -C $SRC
-mkdir -p $(dirname $WEBROOT) # should exist; but just in case...
-mv $SRC/ushahidi-platform-release-*/html $WEBROOT
-rm -rf $SRC/ushahidi*
+tar -xzf "$SRC/ushahidi.tar.gz" -C "$SRC"
+mkdir -p "$(dirname "$WEBROOT")"
+mv "$SRC/ushahidi-platform-release-$VERSION/html" "$WEBROOT"
+rm -rf "$SRC/ushahidi-platform-release-$VERSION" "$SRC/ushahidi.tar.gz"
+
+printf '%s  %s\n' "$UPSTREAM_COMPOSER_LOCK_SHA256" "$WEBROOT/platform/composer.lock" | sha256sum -c -
+
+install -d -m 0755 /usr/local/share/turnkey-ushahidi
+mv "$SRC/laravel-framework.git" /usr/local/share/turnkey-ushahidi/laravel-framework.git
+
+PHP_PACKAGE_VERSION=$(dpkg-query -W -f='${Version}' php7.4-cli)
+cat > /usr/local/share/turnkey-ushahidi/php-runtime <<EOF
+version=$PHP_PACKAGE_VERSION
+source=deb.sury.org PHP repository for Debian Trixie
+suite=trixie
+key_fingerprint=15058500A0235D97F5D10063B188E2B695BD4743
+security_model=third-party best-effort backports without a guaranteed coverage window
+update_command=apt-get update && apt-get upgrade
+EOF
+
+# Common must allow Sury dependencies while resolving the build. Replace its
+# broad bootstrap pins with the exact installed runtime closure so future
+# upgrades can advance required Sury packages without allowing unrelated Sury
+# packages to displace Debian packages.
+cat > /etc/apt/preferences.d/php-sury.pref <<'EOF'
+Package: *
+Pin: origin packages.sury.org
+Pin-Priority: 10
+
+Package: php7.4-* libapache2-mod-php7.4 php-common mlock libc-client2007e libgd3
+Pin: origin packages.sury.org
+Pin-Priority: 550
+EOF
+
+# The deb822 source is explicitly bound to the dedicated keyring. Do not also
+# retain the package's global apt trust copy.
+rm -f /etc/apt/trusted.gpg.d/debsuryorg-archive.gpg
 
 # create conf
-cat > $WEBROOT/platform/.env <<EOF
+set +x
+DB_PASS=$(mcookie)
+APP_KEY=$(mcookie)
+cat > "$WEBROOT/platform/.env" <<EOF
 APP_ENV=production
 APP_DEBUG=false
-APP_KEY=$(mcookie)
+APP_KEY=$APP_KEY
 # This is only relevant for debug level stuff like timestamps in log messages
 APP_TIMEZONE=UTC
 
 DB_HOST=localhost
-DB_DATABASE=ushahidi
-DB_USERNAME=ushahidi
+DB_DATABASE=$DB_NAME
+DB_USERNAME=$DB_USER
 DB_PASSWORD=$DB_PASS
 DB_CONNECTION=mysql
 
@@ -42,23 +85,47 @@ EOF
 
 # setup the database
 service mysql start
-mysqladmin create $DB_NAME
-mysql --batch --execute "grant all privileges on $DB_NAME.* to $DB_USER@localhost identified by '$DB_PASS'; flush privileges;"
+mysqladmin create "$DB_NAME"
+mysql --batch --execute "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS'; GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"
+unset APP_KEY DB_PASS
+set -x
 
 # set up turnkey-artisan command
 sed -i "\|^export WEBROOT| s|=.*|=$WEBROOT/platform|" /usr/local/bin/turnkey-artisan
 
 # finalise api setup
-mkdir -p $WEBROOT/platform/storage/{logs,app,framework,passport}
-chown -R www-data:www-data $WEBROOT
-chmod +x $WEBROOT/platform/bin/phinx
+mkdir -p "$WEBROOT/platform/storage"/{logs,app,framework,passport}
+mkdir -p "$WEBROOT/platform/bootstrap/cache"
+
+# Activate a complete, Git-bound Laravel generation only after the production
+# environment and writable application paths exist.
+/usr/local/sbin/turnkey-ushahidi-laravel-update --bootstrap "$LARAVEL_TAG" --offline
+[ "$(sed -n 's/^commit=//p' /usr/local/share/turnkey-ushahidi/laravel-runtime)" = "$LARAVEL_COMMIT" ]
+COMPOSER_LOCK_SHA256=$(sha256sum "$WEBROOT/platform/composer.lock" | awk '{print $1}')
+cat > /usr/local/share/turnkey-ushahidi/source <<EOF
+version=$VERSION
+tag_commit=$TAG_COMMIT
+archive_sha256=$ARCHIVE_SHA256
+upstream_composer_lock_sha256=$UPSTREAM_COMPOSER_LOCK_SHA256
+composer_lock_sha256=$COMPOSER_LOCK_SHA256
+channel=official Ushahidi v6 stable releases
+EOF
+
+chown -R www-data:www-data "$WEBROOT"
+chown root:www-data "$WEBROOT/platform/.env"
+chmod 0640 "$WEBROOT/platform/.env"
+chmod +x "$WEBROOT/platform/bin/phinx"
 
 turnkey-artisan phinx:migrate
 turnkey-artisan passport:keys
 
-# update admin user email & set site name
-/usr/lib/inithooks/bin/ushahidi.py --email="$ADMIN_MAIL" --pass="$ADMIN_PASS"
+# set the site name before the credential helper closes its database session
 mysql --batch --execute "INSERT INTO $DB_NAME.config (group_name, config_key, config_value) VALUES ('site', 'name', '\"TurnKey Ushahidi\"');"
+/usr/lib/inithooks/bin/ushahidi.py --email="$ADMIN_MAIL" --pass="$ADMIN_PASS"
+
+chown -R www-data:www-data "$WEBROOT/platform/storage" "$WEBROOT/platform/bootstrap/cache"
+chown root:www-data "$WEBROOT/platform/.env"
+chmod 0640 "$WEBROOT/platform/.env"
 
 # stop db service
 service mysql stop
