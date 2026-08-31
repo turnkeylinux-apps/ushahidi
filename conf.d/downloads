@@ -1,15 +1,39 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
-dl() {
-    [ "$FAB_HTTP_PROXY" ] && PROXY="--proxy $FAB_HTTP_PROXY"
-    cd $2; curl -L -f -O $PROXY $1; cd -
-}
+set -x
 
 SRC=/usr/local/src
-REPO="ushahidi/platform-release"
-VERSION=$(gh_releases "$REPO" | sort -V | grep -v 'rc' | tail -1)
-FILE="ushahidi-platform-release-$VERSION.tar.gz"
-URL="https://github.com/$REPO/releases/download/$VERSION/$FILE"
+VERSION=v6.0.17
+ARCHIVE=ushahidi-platform-release-$VERSION.tar.gz
+ARCHIVE_SHA256=9dd9fdfdb563400d0bdc2ba991a2552661541c304c4cadfd79c29539315a8e4e
+URL=https://github.com/ushahidi/platform-release/releases/download/$VERSION/$ARCHIVE
+LARAVEL_REPO=https://github.com/laravel/framework.git
+LARAVEL_TAG=v8.83.29
+LARAVEL_COMMIT=d841a226a50c715431952a10260ba4fac9e91cc4
+LARAVEL_SECURITY_BASELINE=eded6bdfc05af9b5437d107b4d092558fe46292c
 
-dl $URL $SRC
-mv $SRC/$FILE $SRC/ushahidi.tar.gz
+proxy_args=()
+if [ -n "${FAB_HTTP_PROXY:-}" ]; then
+    proxy_args=(--proxy "$FAB_HTTP_PROXY")
+fi
+
+curl -LfsS "${proxy_args[@]}" "$URL" -o "$SRC/ushahidi.tar.gz"
+printf '%s  %s\n' "$ARCHIVE_SHA256" "$SRC/ushahidi.tar.gz" | sha256sum -c -
+
+# Keep the official Git repository in the appliance. Only the maintained 8.x
+# line and its stable v8 tags are fetched. The retained repository is complete
+# so recovery and the packaged update fixture do not depend on future network.
+laravel_git="$SRC/laravel-framework.git"
+git init --bare "$laravel_git"
+git -C "$laravel_git" remote add origin "$LARAVEL_REPO"
+git -C "$laravel_git" fetch --quiet --no-tags origin \
+    '+refs/heads/8.x:refs/heads/8.x' \
+    '+refs/tags/v8.*:refs/tags/v8.*'
+git -C "$laravel_git" symbolic-ref HEAD refs/heads/8.x
+
+[ "$(git -C "$laravel_git" rev-parse "refs/tags/$LARAVEL_TAG^{commit}")" = "$LARAVEL_COMMIT" ]
+git -C "$laravel_git" merge-base --is-ancestor "$LARAVEL_SECURITY_BASELINE" "$LARAVEL_COMMIT"
+git -C "$laravel_git" merge-base --is-ancestor "$LARAVEL_COMMIT" refs/heads/8.x
+git -C "$laravel_git" show "$LARAVEL_COMMIT:composer.json" \
+    | php -r '$package = json_decode(stream_get_contents(STDIN), true); exit(is_array($package) && ($package["name"] ?? null) === "laravel/framework" ? 0 : 1);'
+git -C "$laravel_git" fsck --connectivity-only --no-dangling

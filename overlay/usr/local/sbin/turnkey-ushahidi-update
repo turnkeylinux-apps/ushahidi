@@ -1,0 +1,225 @@
+#!/bin/bash -e
+
+set -o pipefail
+
+REPO_URL=https://github.com/ushahidi/platform-release.git
+LATEST_URL=https://github.com/ushahidi/platform-release/releases/latest
+WEBROOT=/var/www/ushahidi
+SOURCE_RECORD=/usr/local/share/turnkey-ushahidi/source
+LARAVEL_RECORD=/usr/local/share/turnkey-ushahidi/laravel-runtime
+TEMP_DIR=
+
+# TurnKey-vetted release manifest. GitHub discovery is not an authentication
+# boundary: a candidate is usable only when its complete tuple is present here.
+trusted_release() {
+    case "$1" in
+        v6.0.17)
+            printf '%s\n' \
+                '8b50289a360cd6a17d64f663dd7ec68369863f2f' \
+                '9dd9fdfdb563400d0bdc2ba991a2552661541c304c4cadfd79c29539315a8e4e' \
+                'cf38243e034da38b939ef548d8acd0531f26a8b5676d747b29d028000992440c'
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+usage() {
+    echo "usage: turnkey-ushahidi-update --check | --apply [--dry-run]" >&2
+    exit 2
+}
+
+record_value() {
+    key=$1
+    value=$(sed -n "s/^${key}=//p" "$SOURCE_RECORD")
+    [ -n "$value" ] || {
+        echo "missing ${key} in ${SOURCE_RECORD}" >&2
+        exit 1
+    }
+    printf '%s\n' "$value"
+}
+
+cleanup() {
+    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+
+fetch_candidate() {
+    latest_effective=$(curl -LfsS -o /dev/null -w '%{url_effective}' "$LATEST_URL")
+    candidate_version=${latest_effective##*/}
+    printf '%s\n' "$candidate_version" | grep -Eq '^v6\.0\.[0-9]+$' || {
+        echo "unexpected stable release tag: $candidate_version" >&2
+        exit 1
+    }
+
+    candidate_commit=$(git ls-remote "$REPO_URL" "refs/tags/$candidate_version" | awk 'NR == 1 {print $1}')
+    case "$candidate_commit" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+        *) echo "unable to resolve official tag commit for $candidate_version" >&2; exit 1 ;;
+    esac
+
+    TEMP_DIR=$(mktemp -d /var/tmp/turnkey-ushahidi-update.XXXXXX)
+    candidate_archive="$TEMP_DIR/ushahidi.tar.gz"
+    candidate_name="ushahidi-platform-release-$candidate_version.tar.gz"
+    candidate_url="https://github.com/ushahidi/platform-release/releases/download/$candidate_version/$candidate_name"
+    curl -LfsS "$candidate_url" -o "$candidate_archive"
+    candidate_sha256=$(sha256sum "$candidate_archive" | awk '{print $1}')
+    candidate_root="ushahidi-platform-release-$candidate_version"
+    tar -tzf "$candidate_archive" | grep -x "$candidate_root/html/platform/composer.lock" >/dev/null
+    candidate_lock_sha256=$(tar -xOzf "$candidate_archive" "$candidate_root/html/platform/composer.lock" | sha256sum | awk '{print $1}')
+
+    trusted=$(trusted_release "$candidate_version") || {
+        echo "latest release is not yet authenticated by a TurnKey package update: $candidate_version" >&2
+        exit 1
+    }
+    trusted_commit=$(printf '%s\n' "$trusted" | sed -n '1p')
+    trusted_archive_sha256=$(printf '%s\n' "$trusted" | sed -n '2p')
+    trusted_lock_sha256=$(printf '%s\n' "$trusted" | sed -n '3p')
+    [ "$candidate_commit" = "$trusted_commit" ] || {
+        echo "candidate tag commit is not TurnKey-vetted" >&2
+        exit 1
+    }
+    [ "$candidate_sha256" = "$trusted_archive_sha256" ] || {
+        echo "candidate archive is not TurnKey-vetted" >&2
+        exit 1
+    }
+    [ "$candidate_lock_sha256" = "$trusted_lock_sha256" ] || {
+        echo "candidate Composer lock is not TurnKey-vetted" >&2
+        exit 1
+    }
+}
+
+mode=
+dry_run=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check) [ -z "$mode" ] || usage; mode=check ;;
+        --apply) [ -z "$mode" ] || usage; mode=apply ;;
+        --dry-run) dry_run=true ;;
+        *) usage ;;
+    esac
+    shift
+done
+[ -n "$mode" ] || usage
+[ "$mode" = apply ] || [ "$dry_run" = false ] || usage
+[ -f "$SOURCE_RECORD" ] || {
+    echo "missing installed source record" >&2
+    exit 1
+}
+
+installed_version=$(record_value version)
+installed_commit=$(record_value tag_commit)
+installed_archive_sha256=$(record_value archive_sha256)
+installed_upstream_lock_sha256=$(record_value upstream_composer_lock_sha256)
+installed_lock_sha256=$(record_value composer_lock_sha256)
+actual_lock_sha256=$(sha256sum "$WEBROOT/platform/composer.lock" | awk '{print $1}')
+[ "$actual_lock_sha256" = "$installed_lock_sha256" ] || {
+    echo "installed Composer lock does not match the source record" >&2
+    exit 1
+}
+[ -f "$LARAVEL_RECORD" ] || {
+    echo "missing managed Laravel runtime record" >&2
+    exit 1
+}
+laravel_lock_sha256=$(sed -n 's/^composer_lock_sha256=//p' "$LARAVEL_RECORD")
+[ "$actual_lock_sha256" = "$laravel_lock_sha256" ] || {
+    echo "installed Composer lock does not match the Laravel runtime record" >&2
+    exit 1
+}
+
+fetch_candidate
+
+if [ "$candidate_version" = "$installed_version" ]; then
+    [ "$candidate_commit" = "$installed_commit" ] || {
+        echo "official tag commit changed for installed release" >&2
+        exit 1
+    }
+    [ "$candidate_sha256" = "$installed_archive_sha256" ] || {
+        echo "official archive changed for installed release" >&2
+        exit 1
+    }
+    [ "$candidate_lock_sha256" = "$installed_upstream_lock_sha256" ] || {
+        echo "official upstream Composer lock changed for installed release" >&2
+        exit 1
+    }
+fi
+
+status=update-available
+if ! dpkg --compare-versions "${installed_version#v}" lt "${candidate_version#v}"; then
+    status=up-to-date
+fi
+
+printf 'installed=%s\n' "$installed_version"
+printf 'candidate=%s\n' "$candidate_version"
+printf 'candidate_commit=%s\n' "$candidate_commit"
+printf 'candidate_archive_sha256=%s\n' "$candidate_sha256"
+printf 'candidate_composer_lock_sha256=%s\n' "$candidate_lock_sha256"
+printf 'channel=TurnKey-vetted official Ushahidi v6 stable releases\n'
+printf 'status=%s\n' "$status"
+
+[ "$mode" = apply ] || exit 0
+if [ "$dry_run" = true ]; then
+    printf 'apply=dry-run verified exact candidate\n'
+    exit 0
+fi
+[ "$(id -u)" -eq 0 ] || {
+    echo "apply requires root" >&2
+    exit 1
+}
+if [ "$status" = up-to-date ]; then
+    printf 'apply=no-op\n'
+    exit 0
+fi
+
+tar -xzf "$candidate_archive" -C "$TEMP_DIR"
+candidate_webroot="$TEMP_DIR/$candidate_root/html"
+
+# The Laravel channel owns these four paths. A reviewed Ushahidi patch may be
+# applied only while every other locked/installed Composer package is
+# unchanged; otherwise a TurnKey package revision must reconcile both updates.
+python3 - "$WEBROOT/platform" "$candidate_webroot/platform" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+live, candidate = map(Path, sys.argv[1:])
+
+def packages(path):
+    data = json.loads(path.read_text())
+    return sorted(
+        (item for item in data["packages"] if item.get("name") != "laravel/framework"),
+        key=lambda item: item["name"],
+    )
+
+if packages(live / "composer.lock") != packages(candidate / "composer.lock"):
+    raise SystemExit("non-Laravel Composer lock changed; TurnKey reconciliation required")
+if packages(live / "vendor/composer/installed.json") != packages(candidate / "vendor/composer/installed.json"):
+    raise SystemExit("non-Laravel installed metadata changed; TurnKey reconciliation required")
+PY
+rsync -a --delete \
+    --exclude platform/.env \
+    --exclude platform/storage/ \
+    --exclude platform/composer.lock \
+    --exclude platform/vendor/laravel/framework \
+    --exclude platform/vendor/composer/installed.json \
+    --exclude platform/vendor/composer/installed.php \
+    "$candidate_webroot/" "$WEBROOT/"
+chown -R www-data:www-data "$WEBROOT/platform/storage" "$WEBROOT/platform/bootstrap/cache"
+chown root:www-data "$WEBROOT/platform/.env"
+chmod 0640 "$WEBROOT/platform/.env"
+
+turnkey-artisan phinx:migrate
+turnkey-artisan cache:clear
+
+record_tmp="$TEMP_DIR/source"
+cat > "$record_tmp" <<EOF
+version=$candidate_version
+tag_commit=$candidate_commit
+archive_sha256=$candidate_sha256
+upstream_composer_lock_sha256=$candidate_lock_sha256
+composer_lock_sha256=$actual_lock_sha256
+channel=official Ushahidi v6 stable releases
+EOF
+install -m 0644 "$record_tmp" "$SOURCE_RECORD"
+printf 'apply=complete\n'

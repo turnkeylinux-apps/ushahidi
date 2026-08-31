@@ -1,15 +1,18 @@
 #include <turnkey/base>
-#include <turnkey/lamp73>
+#include <turnkey/lamp74>
 
-php7.3-gd
-php7.3-cli
-php7.3-curl
-php7.3-json
-php7.3-mbstring
-php7.3-imap
-php7.3-xml
-php7.3-redis
+php7.4-gd
+php7.4-cli
+php7.4-curl
+php7.4-json
+php7.4-mbstring
+php7.4-imap
+php7.4-xml
+php7.4-redis
 
 unzip
 python3-bcrypt
 redis-server
+jq
+rsync
+git

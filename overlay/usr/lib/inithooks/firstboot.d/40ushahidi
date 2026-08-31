@@ -6,3 +6,13 @@
 [ -e $INITHOOKS_CONF ] && . $INITHOOKS_CONF
 $INITHOOKS_PATH/bin/ushahidi.py --pass="$APP_PASS" --email="$APP_EMAIL"
 
+# The MySQL helper starts MariaDB when needed and restores its prior state on
+# exit.  Firstboot can race MariaDB's parallel systemd start, causing the helper
+# to observe it as stopped and shut it down after rotating the administrator
+# credentials.  Keep the appliance database available after firstboot.
+service mariadb start
+
+# Apache may exit while the firstboot TLS certificate is being replaced.  The
+# certificate hook only restarts services that remain active, so recover the
+# web service after certificate generation and application initialization.
+service apache2 start
